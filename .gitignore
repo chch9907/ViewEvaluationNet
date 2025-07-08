@@ -1,3 +1,6 @@
 snapshots/
 .idea/
 .ideas/
+__pycache__
+*.pyc
+model_params/

@@ -5,22 +5,30 @@ import torch.backends.cudnn as cudnn
 from torch.autograd import Variable
 import os, sys
 import numpy as np
-
+from PIL import Image
+import cv2
+import torch.nn.functional as F
+import pandas as pd
 from nets.FullVggCompositionNet import FullVggCompositionNet as CompositionNet
 from nets.SiameseNet import SiameseNet
 from datasets import data_transforms
 from py_utils import dir_utils, load_utils, bboxes
 from datasets.get_test_image_list import get_test_list, get_pdefined_anchors
 from pt_utils import cuda_model
-import progressbar
+from tqdm import tqdm
 import datasets.val_pdefined_anchors as dataset_loader
 
 parser = argparse.ArgumentParser(description="Full VGG trained on CPC")
 parser.add_argument('--l1', default=1024, type=int)
 parser.add_argument('--l2', default=512, type=int)
-parser.add_argument("--gpu_id", default='1', type=str)
+parser.add_argument("--gpu_id", default='0', type=str)
 parser.add_argument('--multiGpu', '-m', action='store_true', help='positivity constraint')
-parser.add_argument('--resume', '-r', default='snapshots/MTweak3-FullVGG-1024x512/params/best-5000-0.55-0.77.pth.tar', type=str, help='resume from checkpoint')
+parser.add_argument('--resume', '-r', default='model_params/EvaluationNet.pth.tar', type=str, help='resume from checkpoint')
+parser.add_argument('--image_dir', default='/home/user/HKUra/workspace/FotoBot/myproject/src/metrics/office_ours_clip1_fps25', type=str)
+parser.add_argument('--output_csv', default='/home/user/HKUra/workspace/FotoBot/myproject/src/metrics/office_ours_clip1_fps25.csv', type=str)
+
+
+
 
 if __name__ == '__main__':
 
@@ -39,9 +47,9 @@ if __name__ == '__main__':
     ckpt_file = args.resume
     if ckpt_file is not None:
         if not os.path.isfile(ckpt_file):
-            print "CKPT {:s} NOT EXIST".format(ckpt_file)
+            print("CKPT {:s} NOT EXIST".format(ckpt_file))
             sys.exit(-1)
-        print "load from {:s}".format(ckpt_file)
+        print("load from {:s}".format(ckpt_file))
 
         single_pass_net = CompositionNet(pretrained=False, LinearSize1=args.l1, LinearSize2=args.l2)
         siamese_net = SiameseNet(single_pass_net)
@@ -62,58 +70,67 @@ if __name__ == '__main__':
     pdefined_anchors = get_pdefined_anchors()
     t_transform = data_transforms.get_val_transform(224)
 
-    image_list = get_test_list()
-    image_list = image_list[0:5]
-
-
+    image_list = get_test_list(args.image_dir)
     n_images = len(image_list)
 
 
-    print "Number of Images:\t{:d}".format(len(image_list))
+    print ("Number of Images:\t{:d}".format(len(image_list)))
 
     image_annotation ={}
     topN = 5
+    s_image_scores = []
+    for image_idx, s_image_path in tqdm(enumerate(image_list)):
+        s_image = Image.open(s_image_path)
+        t_image_crop = t_transform(s_image)
+        if useCuda:
+            t_image_crop = t_image_crop.cuda()
 
-    for image_idx, s_image_path in enumerate(image_list):
-        image_crops, image_bboxes = dataset_loader.Get895Crops(s_image_path, pdefined_anchors)
-        print "[{:d} | {:d}]\t{:s}".format(image_idx, n_images, os.path.basename(s_image_path))
-        pbar =progressbar.ProgressBar(max_value=len(image_crops))
-        s_image_scores = []
-        s_image_bboxes = []
-        for crop_idx, (s_image_crop, s_image_bbox) in enumerate(zip(image_crops, image_bboxes)):
-            pbar.update(crop_idx)
-            t_image_crop = t_transform(s_image_crop)
-
-
-            if useCuda:
-                t_image_crop = t_image_crop.cuda()
-
-            t_input = Variable(t_image_crop)
-            t_output = single_pass_net(t_input.unsqueeze(0))
-            s_image_scores.append(t_output.data.cpu().numpy()[0][0])
-
-            s_image_bboxes.append(s_image_bbox)
-
-        idx_sorted = np.argsort(-np.array(s_image_scores))
-        s_image_scores_sorted = [s_image_scores[i] for i in idx_sorted]
-        s_image_bboxes_sorted = [s_image_bboxes[i] for i in idx_sorted]
-        s_scores_nms, s_bboxes_nms, _ = bboxes.bboxes_nms(s_image_scores_sorted, s_image_bboxes_sorted, nms_threshold=0.6)
-
-        s_image_name = os.path.basename(s_image_path)
-        pick_n = min(topN, len(s_scores_nms))
-        image_annotation[s_image_name] = {}
-        image_annotation[s_image_name]['scores'] = s_scores_nms[0:pick_n]
-        image_annotation[s_image_name]['bboxes'] = s_bboxes_nms[0:pick_n]
-
-    print "Done Computing, saving to {:s}".format(save_file)
-    load_utils.save_json(image_annotation, save_file)
+        t_input = Variable(t_image_crop)
+        t_output = single_pass_net(t_input.unsqueeze(0))
+        score = F.sigmoid(t_output).data.cpu().numpy()[0][0]
+        print(score)
+        s_image_scores.append(score)
+    idx_sorted = np.argsort(-np.array(s_image_scores))[:topN]
+    
+    for idx in idx_sorted:
+        image_file = image_list[idx]
+        print(idx, s_image_scores[idx])
+        cv2.imshow('topN', cv2.imread(image_file))
+        if cv2.waitKey(0) == ord('q'):
+            continue
+    cv2.destroyAllWindows()
+    
+    
+    # for image_idx, s_image_path in enumerate(image_list):
+    #     image_crops, image_bboxes = dataset_loader.Get895Crops(s_image_path, pdefined_anchors)
+    #     print("[{:d} | {:d}]\t{:s}".format(image_idx, n_images, os.path.basename(s_image_path)))
+    #     pbar =progressbar.ProgressBar(max_value=len(image_crops))
+    #     s_image_scores = []
+    #     s_image_bboxes = []
+    #     for crop_idx, (s_image_crop, s_image_bbox) in enumerate(zip(image_crops, image_bboxes)):
+    #         pbar.update(crop_idx)
+    #         t_image_crop = t_transform(s_image_crop)
 
 
+    #         if useCuda:
+    #             t_image_crop = t_image_crop.cuda()
 
+    #         t_input = Variable(t_image_crop)
+    #         t_output = single_pass_net(t_input.unsqueeze(0))
+    #         s_image_scores.append(t_output.data.cpu().numpy()[0][0])
 
+    #         s_image_bboxes.append(s_image_bbox)
 
+    #     idx_sorted = np.argsort(-np.array(s_image_scores))
+    #     s_image_scores_sorted = [s_image_scores[i] for i in idx_sorted]
+    #     s_image_bboxes_sorted = [s_image_bboxes[i] for i in idx_sorted]
+    #     s_scores_nms, s_bboxes_nms, _ = bboxes.bboxes_nms(s_image_scores_sorted, s_image_bboxes_sorted, nms_threshold=0.6)
 
+    #     s_image_name = os.path.basename(s_image_path)
+    #     pick_n = min(topN, len(s_scores_nms))
+    #     image_annotation[s_image_name] = {}
+    #     image_annotation[s_image_name]['scores'] = s_scores_nms[0:pick_n]
+    #     image_annotation[s_image_name]['bboxes'] = s_bboxes_nms[0:pick_n]
 
-
-
-
+    # print ("Done Computing, saving to {:s}".format(save_file))
+    # load_utils.save_json(image_annotation, save_file)

@@ -301,4 +301,4 @@ if __name__ == '__main__':
     # image_tensor = transforms.ToTensor()(image)
     # addGaussian = AddGaussianNoise()
     # output_image = addGaussian(image_tensor)
-    print "DB"
+    # print "DB"
